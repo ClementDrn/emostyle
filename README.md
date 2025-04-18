@@ -33,28 +33,89 @@
 >
 >**Abstract:** Recent studies have achieved impressive results in face generation and editing of facial expressions. However, existing approaches either generate a discrete number of facial expressions or have limited control over the emotion of the output image. To overcome this limitation, we introduced EmoStyle, a method to edit facial expressions based on valence and arousal, two continuous emotional parameters that can specify a broad range of emotions. EmoStyle is designed to separate emotions from other facial characteristics and to edit the face to display a desired emotion. We employ the pre-trained generator from StyleGAN2, taking advantage of its rich latent space. We also proposed an adapted inversion method to be able to apply our system on out-of-StyleGAN2 domain (OOD) images in a one-shot manner. The qualitative and quantitative evaluations show that our approach has the capability to synthesize a wide range of expressions to output high-resolution images.
 
-## Usage
+
+## Getting started
+
+### Setup environment
+
+In order to run any Python script from this repository, you will need to setup their execution environment.
+
+You will need Nvidia CUDA toolkit `nvcc`.
+```sh
+sudo apt install nvidia-cuda-toolkit
+```
+
+You also need the gcc version matching your CUDA version (e.g. CUDA 11.2 supports g++-10 max).
+```sh
+nvcc --version
+```
+Once you have your CUDA version, refer to this [StakOverflow question](https://stackoverflow.com/questions/6622454/cuda-incompatible-with-my-gcc-version) for more information about the supported gcc version and install it.
+```sh
+sudo apt install g++-10
+```
+
+Install Pytorch with pip inside a virtual environment.
+```sh
+python3 -m venv .venv
+.venv/bin/pip3 install torch torchvision torchaudio
+```
+
+Install other dependencies
+```sh
+.venv/bin/pip3 install requests tqdm Ninja matplotlib lpips scikit-image
+```
+
+Activate virtual environment in your shell before running any Python script.
+```sh
+source .venv/bin/activate
+```
+
+### Download pretrained weights
+
+Please download pretrained weights so you do not have to train them yourself.
+Create a directory `pretrained` and the following weights in it:
+- **EmoMapping wplus** ([emo_mapping_wplus_2.pt](https://drive.google.com/file/d/17C1-ACpPbFnaRNVYpDPrzNTYbFJPL_7h/view?usp=sharing)), the weights of this project's model, trained on generated images from StyleGAN2
+- **8-emotion Emonet** ([emonet_8.pth](https://github.com/face-analysis/emonet/blob/master/pretrained/emonet_8.pth)), 
+- **Resnet** ([resnet50_ft_weight.pkl](https://drive.google.com/file/d/1A94PAAnwk6L7hXdBXLFosB_s0SzEhAFU/view)), 
+- **FFHQ StyleGAN2** ([ffhq.pkl](https://nvlabs-fi-cdn.nvidia.com/stylegan2-ada-pytorch/pretrained/ffhq2.pkl)), StyleGANv2 model trained on FFHQ
+- **dlib landmarks model** ([shape_predictor_68_face_landmarks.dat.bz2](http://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2)), used in background loss and pose loss + preprocessing images
+- | **IR-SE50 Model** ([model_ir_se50.pth](https://drive.google.com/file/d/1KW7bjndL3QG3sxBbZxreGHigcCCpsDgn/view?usp=sharing)) | Pretrained IR-SE50 model taken from [TreB1eN](https://github.com/TreB1eN/InsightFace_Pytorch) in Used ID loss
+  
+
+### Generate new images
+
+Run `generate_dataset_pkl.py` script. Specify if you want to use the CPU instead of CUDA cores on GPU.
+This will generate 1000 original images in `dataset/1024_pkl` directory using model StyleGAN2. 
+```sh
+python generate_dataset_pkl.py --samples 24 --cpu
+```
+
+### Changing emotions on images
+
+Now run `test.py` to edit face images from `dataset/1024_pkl`.
+You can specify if you want to use the CPU instead of CUDA cores on GPU.
+```sh
+python test.py --test_mode folder_images --valence 0 -0.5 0.2 --arousal 0 -0.5 0.2 --wplus --cpu
+```
+
+
+## Detailed usage
 #### Dataset
 Use `generate_dataset_pkl.py` to generate images from [StyleGAN2](https://github.com/NVlabs/stylegan2?tab=readme-ov-file) domain. Following the recommendation in the original StyleGAN paper, we truncated the vectors by a factor of 0.7.
 
-### Pretrained Models
-- [EmoMapping wplus](https://drive.google.com/file/d/17C1-ACpPbFnaRNVYpDPrzNTYbFJPL_7h/view?usp=sharing) trained on generated images from StyleGAN2
-- [FFHQ StyleGAN](https://nvlabs-fi-cdn.nvidia.com/stylegan2-ada-pytorch/pretrained/ffhq.pkl) StyleGANv2 model trained on FFHQ
-- [dlib landmarks model](http://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2) Used in background loss and pose loss + preprocessing images
-- |[IR-SE50 Model](https://drive.google.com/file/d/1KW7bjndL3QG3sxBbZxreGHigcCCpsDgn/view?usp=sharing) | Pretrained IR-SE50 model taken from [TreB1eN](https://github.com/TreB1eN/InsightFace_Pytorch) in Used ID loss
-  
 #### Train EmoMapping
 To train your model, use the `train_emostyle.py` script with the following command-line arguments:
 
 ```bash
 python train_emostyle.py \
     --datapath "dataset/1024_pkl/" \
-    --stylegan2_checkpoint_path "pretrained/ffhq2.pkl" \
+    --stylegan2_checkpoint_path "pretrained/ffhq.pkl" \
     --vggface2_checkpoint_path "pretrained/resnet50_ft_weight.pkl" \
     --emonet_checkpoint_path "pretrained/emonet_8.pth" \
     --log_path "logs/" \
     --output_path "checkpoints/" \
-    --wplus True
+    --wplus \
+    --cpu
 ```
 - `datapath`: Path to the dataset. This should be the directory containing your dataset files.
 - `stylegan2_checkpoint_path`: Path to the StyleGAN2 checkpoint. Provide the location of the pre-trained StyleGAN2 checkpoint file.
@@ -63,6 +124,7 @@ python train_emostyle.py \
 - `log_path`: Path to the log directory. Choose the directory where log files will be stored during the training process.
 - `output_path`: Path to the output directory. Define the directory where trained model checkpoints will be saved.
 - `wplus`: Enable wplus. Include this flag if you want to enable the wplus option during training.
+- `cpu`: Use CPU. Include this flag if you want to run models on the CPU instead of CUDA cores on GPU.
 
 ### Personalized Track
 #### Dataset
@@ -74,7 +136,7 @@ Using 1 or more images of a person cropped the faces in to StyleGAN desired inpu
 ```bash
 python personalized.py \
     --datapath "experiments/personalized_single_4/" \
-    --stylegan2_checkpoint_path "pretrained/ffhq2.pkl" \
+    --stylegan2_checkpoint_path "pretrained/ffhq.pkl" \
     --emo_mapping_checkpoint_path "checkpoints/emo_mapping_wplus/emo_mapping_wplus_2.pt" \
     --vggface2_checkpoint_path "pretrained/resnet50_ft_weight.pkl" \
     --emonet_checkpoint_path "pretrained/emonet_8.pth" \
@@ -106,17 +168,19 @@ python test.py \
     --test_mode your_test_mode \
     --valence 0 -0.5 0.2 \
     --arousal 0 -0.5 0.2 \
-    --wplus True
+    --wplus \
+    --cpu
 ```
 
 - `images_path`: Path to the directory containing images for testing.
 - `stylegan2_checkpoint_path`: Path to the StyleGAN2 checkpoint file.
 - `checkpoint_path`: Path to the checkpoint file for emo_mapping.
 - `output_path`: Path to the directory where results will be saved.
-- `test_mode`: Test mode, e.g., 'random'.
+- `test_mode`: Test mode, can be 'random' or 'folder_images'.
 - `valence`: List of valence values (space-separated), e.g., 0 -0.5 0.2.
 - `arousal`: List of arousal values (space-separated), e.g., 0 -0.5 0.2.
-- `wplus`: Use W+ (True) or W (False).
+- `wplus`: Use W+ instead of W.
+- `cpu`: Use CPU. Include this flag if you want to run models on the CPU instead of CUDA cores on GPU.
 
 <div align="center">
 

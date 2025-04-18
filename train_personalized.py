@@ -253,7 +253,7 @@ if __name__ == "__main__":
     parser.add_argument("--log_path", type=str, default="logs/personalized")
     parser.add_argument("--inversion_type", type=str, default="e4e")
     parser.add_argument("--output_path", type=str, default="checkpoints/")
-    parser.add_argument("--wplus", type=bool, default=True)
+    parser.add_argument("--wplus", type=bool, action="store_true")
 
     args = parser.parse_args()
 

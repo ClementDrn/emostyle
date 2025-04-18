@@ -1,3 +1,12 @@
+.vscode/
+__pycache__/
+.venv/
+
 /dataset/
 /pretrained/
-/__pycache__/
+/checkpoints/
+/results/
+/logs/
+
+random.pkl
+result.png

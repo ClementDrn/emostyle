@@ -3,7 +3,6 @@ import pickle
 import random
 import argparse
 
-
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -28,8 +27,7 @@ from losses import *
 from skimage import draw
 import glob
 
-is_cuda = torch.cuda.is_available()
-device = 'cuda' if is_cuda else 'cpu'
+
 EMO_EMBED = 64
 STG_EMBED = 512
 INPUT_SIZE = 1024
@@ -41,8 +39,12 @@ def train(
     emonet_checkpoint_path: str,
     log_path: str,
     output_path: str,
-    wplus: bool
+    wplus: bool,
+    on_cpu: bool
 ):
+    device = 'cuda' if not on_cpu and torch.cuda.is_available() else 'cpu'
+    is_cuda = device == 'cuda'
+
     stylegan = StyleGAN2(
         checkpoint_path=stylegan2_checkpoint_path,
         stylegan_size=INPUT_SIZE,
@@ -71,23 +73,21 @@ def train(
     else:
         emo_mapping = EmoMappingW(EMO_EMBED, STG_EMBED)
 
-    
-    kwargs = {'num_workers': 8, 'pin_memory': True} if torch.cuda.is_available() else {}
-    train_loader = torch.utils.data.DataLoader(SyntheticDataset(datapath, mode='training'), batch_size=4, shuffle=True, **kwargs)
+
+    kwargs = {'num_workers': 8, 'pin_memory': True} if is_cuda else {}    
+    train_loader = torch.utils.data.DataLoader(SyntheticDataset(datapath, mode='training'), batch_size=1, shuffle=True, **kwargs)
 
     lr = 5e-5
     generator_params = list(emo_mapping.parameters())
     generator_optimizer = optim.Adam(generator_params, lr=lr, betas=(0.9, 0.999), eps=1e-08) # weight_decay=1e-4
     generator_gan_optimizer = optim.Adam(generator_params, lr=lr * 0.1, betas=(0.9, 0.999), eps=1e-08)
-
     
-    if is_cuda:
-        stylegan.cuda()
-        vggface2_net.cuda()
-        landmark_net.cuda()
-        emonet.cuda()
-        face_pool.cuda()
-        emo_mapping.cuda()
+    stylegan = stylegan.to(device)
+    vggface2_net = vggface2_net.to(device)
+    landmark_net = landmark_net.to(device)
+    emonet = emonet.to(device)
+    face_pool = face_pool.to(device)
+    emo_mapping = emo_mapping.to(device)
 
     weight_id = 1.5
     weight_emotion = 0.3
@@ -114,8 +114,24 @@ def train(
         landmark_masks['same_face'] = landmark_masks['same_face'].cuda()
         landmark_masks['emo_face'] = landmark_masks['emo_face'].cuda()
 
+    # Load latest checkpoint if it exists.
+    checkpoint_files = glob.glob(os.path.join(output_path, 'checkpoint_*.pt'))
+    if checkpoint_files:
+        checkpoint_files.sort(key=lambda x: int(x.split('_')[-1].split('.')[0]))
+        latest_checkpoint = checkpoint_files[-1]
+        ckpt = torch.load(latest_checkpoint)
+        start_epoch = ckpt['epoch'] + 1
+        emo_mapping.load_state_dict(ckpt['emo_mapping_state_dict'])
+        generator_optimizer.load_state_dict(ckpt['generator_optimizer_state_dict'])
+        generator_gan_optimizer.load_state_dict(ckpt['generator_gan_optimizer_state_dict'])
+        print(f"Loaded checkpoint from epoch {ckpt['epoch']}. Resuming from epoch {start_epoch}.")
+    else:
+        start_epoch = 0
+        print("No checkpoint found. Starting training from epoch 0.")
+
+    total_epochs = 6
     iter = 1
-    for epoch in range(6):
+    for epoch in range(start_epoch, total_epochs):
         emo_mapping.train()
         for images, latents in train_loader:
             if wplus:
@@ -123,8 +139,8 @@ def train(
             else:
                 latents = latents[:, 0, :]
             
-            if is_cuda:
-                images, latents = images.cuda(), latents.cuda()
+            images = images.to(device)
+            latents = latents.to(device)
             images = Variable(images)
             latents = Variable(latents)
             latents.requires_grad = True
@@ -142,7 +158,7 @@ def train(
                 src_landmarks, src_landmarks_maxval = landmark_net(images)
                 background_masks, valid_bg_mask = compute_background_mask(images, src_landmarks, src_landmarks_maxval)
                 src_emotions = emonet(images)
-                random_emotion = torch.FloatTensor(batch_size, 2).uniform_(-1., 1.).cuda()
+                random_emotion = torch.FloatTensor(batch_size, 2).uniform_(-1., 1.).to(device)
                 if same_face:
                     current_emotion = src_emotions
                 else:
@@ -227,6 +243,7 @@ def train(
 
             iter += 1
 
+        print(f"Saving checkpoint for epoch {epoch}...")
         torch.save({
                 'epoch': epoch,
                 'emo_mapping_state_dict': emo_mapping.state_dict(),
@@ -238,13 +255,43 @@ def train(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train script for your program")
     
-    parser.add_argument("--datapath", required=True, help="Path to the dataset")
-    parser.add_argument("--stylegan2_checkpoint_path", required=True, help="Path to the StyleGAN2 checkpoint")
-    parser.add_argument("--vggface2_checkpoint_path", required=True, help="Path to the VGGFace2 checkpoint")
-    parser.add_argument("--emonet_checkpoint_path", required=True, help="Path to the Emonet checkpoint")
-    parser.add_argument("--log_path", required=True, help="Path to the log directory")
-    parser.add_argument("--output_path", required=True, help="Path to the output directory")
-    parser.add_argument("--wplus", action="store_true", help="Enable wplus (if provided)")
+    parser.add_argument(
+        "--datapath", 
+        type=str, 
+        default="dataset/1024_pkl/",
+        help="Path to the dataset")
+    parser.add_argument(
+        "--stylegan2_checkpoint_path", 
+        type=str, 
+        default="pretrained/ffhq.pkl", 
+        help="Path to the StyleGAN2 checkpoint")
+    parser.add_argument(
+        "--vggface2_checkpoint_path", 
+        type=str, 
+        default="pretrained/resnet50_ft_weight.pkl",
+        help="Path to the VGGFace2 checkpoint")
+    parser.add_argument(
+        "--emonet_checkpoint_path", 
+        type=str, 
+        default="pretrained/emonet_8.pth",
+        help="Path to the Emonet checkpoint")
+    parser.add_argument(
+        "--log_path", 
+        type=str, 
+        default="logs/",
+        help="Path to the log directory")
+    parser.add_argument(
+        "--output_path", 
+        type=str, default="checkpoints/",
+        help="Path to the output directory")
+    parser.add_argument(
+        "--wplus", 
+        action="store_true",
+        help="Enable wplus (if provided)")
+    parser.add_argument(
+        "--cpu", 
+        action="store_true",
+        help="Run on CPU (if provided)")
 
     args = parser.parse_args()
 
@@ -255,5 +302,6 @@ if __name__ == "__main__":
         emonet_checkpoint_path=args.emonet_checkpoint_path,
         log_path=args.log_path,
         output_path=args.output_path,
-        wplus=args.wplus
+        wplus=args.wplus,
+        on_cpu=args.cpu
     )
