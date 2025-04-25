@@ -40,6 +40,9 @@ def test(
     checkpoint_path: str,
     output_path: str,
     test_mode: str,
+    angles: list,
+    angle_labels: list,
+    strengths: list,    
     valence: list,
     arousal: list,
     wplus: bool,
@@ -76,6 +79,62 @@ def test(
     emonet = emonet.to(device)
     
     latents = {}
+
+    # When using emotion_grid mode, load a single latent (from the first PNG file)
+    if test_mode == 'emotion_grid':
+        image_files = [images_path+filename for filename in os.listdir(images_path) if filename.endswith('.png')]
+        if not image_files:
+            raise FileNotFoundError(f"No PNG files found in '{images_path}'")
+        image_file = sorted(image_files)[0]
+        image_name = os.path.splitext(os.path.basename(image_file))[0]
+        latent_path = os.path.splitext(image_file)[0] + '.npy'
+        image_latent = np.load(latent_path, allow_pickle=False)
+        if wplus:
+            image_latent = np.expand_dims(image_latent[:, :], 0)
+        else:
+            image_latent = np.expand_dims(image_latent[0, :], 0)
+        base_latent = torch.from_numpy(image_latent).float().to(device)
+
+        # Create a grid of images with number of rows = len(angles) and columns = len(strengths)
+        n_rows = len(angles)
+        n_cols = len(strengths)
+        fig, axs = plt.subplots(nrows=n_rows, ncols=n_cols, figsize=(n_cols*5, n_rows*5))
+        # If there is only one row or one col, wrap axs in a list for uniform indexing.
+        if n_rows == 1:
+            axs = [axs]
+        if n_cols == 1:
+            axs = [[ax] for ax in axs] if n_rows > 1 else [[axs]]
+            
+        # Iterate over each angle and strength to generate the image grid.
+        for i, angle in enumerate(angles):
+            # Convert to radians and compute base vector (using cosine and sine)
+            rad = np.deg2rad(angle)
+            base_valence = np.cos(rad)
+            base_arousal = np.sin(rad)
+            for j, strength in enumerate(strengths):
+                # Scale the emotion vector by strength
+                emotion_vector = torch.FloatTensor([[base_valence * strength, base_arousal * strength]]).to(device)
+                fake_latents = base_latent + emo_mapping(base_latent, emotion_vector)
+                generated_image_tensor = stylegan.generate(fake_latents)
+                generated_image_tensor = (generated_image_tensor + 1.) / 2.
+                # Convert generated image tensor to numpy image (HWC, uint8)
+                generated_image = generated_image_tensor.detach().cpu().squeeze().numpy()
+                generated_image = np.clip(generated_image*255, 0, 255).astype(np.uint8)
+                generated_image = generated_image.transpose(1, 2, 0)
+                axs[i][j].imshow(generated_image)
+                axs[i][j].axis('off')
+                axs[i][j].set_title(f"Angle:{angle}°\nStrength:{strength}", fontsize=10)
+            # If angle_labels are provided, add a label text on the right of each image row.
+            if angle_labels is not None:
+                print(f"Angle label: {angle_labels[i]}")
+                axs[i][0].text(-0.5, 0.5, angle_labels[i], fontsize=20, ha='center', va='center', rotation=90, transform=axs[i][0].transAxes)
+                
+        # Save the grid of images
+        grid_output_path = os.path.join(output_path, f"grid_{image_name}.png")
+        plt.savefig(grid_output_path, bbox_inches='tight')
+        plt.close('all')
+        print(f"Saved emotion grid to {grid_output_path}")
+        return
     
     if test_mode == 'random':
         # random mode:
@@ -190,8 +249,26 @@ if __name__ == "__main__":
         "--test_mode", 
         type=str, 
         default="random", 
-        choices=["random", "folder_images"],
-        help="Mode of testing: 'random' for random images, 'folder_images' for images in a folder")
+        choices=["random", "folder_images", "emotion_grid"],
+        help="Mode of testing: 'random' for random images, 'folder_images' for images in a folder, 'emotion_grid' for a grid of emotions")
+    parser.add_argument(
+        "--angles", 
+        type=float, 
+        nargs='+',
+        default=None,
+        help="List of angles (in degrees) to use for the emotion grid (top-to-bottom)")
+    parser.add_argument(
+        "--angle_labels", 
+        type=str, 
+        nargs='+',
+        default=None,
+        help="[Optional] List of labels corresponding to each angle; must match number of angles")
+    parser.add_argument(
+        "--strengths", 
+        type=float, 
+        nargs='+',
+        default=None,
+        help="List of strength values to scale the emotion vector (left-to-right)")
     parser.add_argument(
         "--valence", 
         type=float, 
@@ -228,12 +305,24 @@ if __name__ == "__main__":
         os.makedirs(args.output_path)
         print(f"Output path '{args.output_path}' created.")
 
+    # emotion_grid mode checks
+    if args.test_mode == "emotion_grid":
+        # Check that angles and strengths are provided
+        if args.angles is None or args.strengths is None:
+            raise ValueError("For emotion_grid mode, both --angles and --strengths must be provided.")
+        # Check that if angle labels are provided, they match the number of angles
+        if args.angle_labels is not None and len(args.angle_labels) != len(args.angles):
+            raise ValueError("If --angle_labels are provided, they must match the number of angles.")
+
     test(
         images_path=args.images_path,
         stylegan2_checkpoint_path=args.stylegan2_checkpoint_path,
         checkpoint_path=args.checkpoint_path,
         output_path=args.output_path,
         test_mode=args.test_mode,
+        angles=args.angles,
+        angle_labels=args.angle_labels,
+        strengths=args.strengths,
         valence=args.valence,
         arousal=args.arousal,
         wplus=args.wplus,
