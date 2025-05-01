@@ -136,6 +136,48 @@ def test(
         print(f"Saved emotion grid to {grid_output_path}")
         return
     
+    elif test_mode == 'emotion_singles':
+        # emotion_singles mode:
+        # - For each image in images_path, generate an image for each combination
+        #   of provided angles and strengths.
+        # - The emotion vector is computed as:
+        #       (cos(angle in radians) * strength, sin(angle in radians) * strength)
+        # - Generated images are saved as independent files named:
+        #       {imagename}_{angle}_{strength}.png
+        # - No text is included in the images.
+        # - A progress bar from tqdm shows the processing status.
+        image_files = [os.path.join(images_path, filename) for filename in os.listdir(images_path) if filename.endswith('.png')]
+        if not image_files:
+            raise FileNotFoundError(f"No PNG files found in '{images_path}'")
+        
+        for image_file in tqdm(sorted(image_files), desc="Processing images"):
+            image_name = os.path.splitext(os.path.basename(image_file))[0]
+            latent_path = os.path.splitext(image_file)[0] + '.npy'
+            image_latent = np.load(latent_path, allow_pickle=False)
+            if wplus:
+                image_latent = np.expand_dims(image_latent[:, :], 0)
+            else:
+                image_latent = np.expand_dims(image_latent[0, :], 0)
+            latent = torch.from_numpy(image_latent).float().to(device)
+            
+            # For every combination of angle and strength, generate and save an output image.
+            for angle in angles:
+                rad = np.deg2rad(angle)
+                base_valence = np.cos(rad)
+                base_arousal = np.sin(rad)
+                for strength in strengths:
+                    emotion_vector = torch.FloatTensor([[base_valence * strength, base_arousal * strength]]).to(device)
+                    fake_latents = latent + emo_mapping(latent, emotion_vector)
+                    generated_image_tensor = stylegan.generate(fake_latents)
+                    generated_image_tensor = (generated_image_tensor + 1.) / 2.
+                    generated_image = generated_image_tensor.detach().cpu().squeeze().numpy()
+                    generated_image = np.clip(generated_image*255, 0, 255).astype(np.uint8)
+                    generated_image = generated_image.transpose(1, 2, 0)
+                    
+                    out_filename = os.path.join(output_path, f"{image_name}_{angle}_{strength}.png")
+                    plt.imsave(out_filename, generated_image)
+        return
+
     if test_mode == 'random':
         # random mode:
         # - Randomly samples 100 image indices from 1 to 70000.
@@ -249,14 +291,14 @@ if __name__ == "__main__":
         "--test_mode", 
         type=str, 
         default="random", 
-        choices=["random", "folder_images", "emotion_grid"],
-        help="Mode of testing: 'random' for random images, 'folder_images' for images in a folder, 'emotion_grid' for a grid of emotions")
+        choices=["random", "folder_images", "emotion_grid", "emotion_singles"],
+        help="Mode of testing: 'random' for random images, 'folder_images' for images in a folder, 'emotion_grid' for a grid of emotions, 'emotion_singles' for generating independent images per emotion")
     parser.add_argument(
         "--angles", 
         type=float, 
         nargs='+',
         default=None,
-        help="List of angles (in degrees) to use for the emotion grid (top-to-bottom)")
+        help="List of angles (in degrees) to use for the emotion grid or singles (top-to-bottom)")
     parser.add_argument(
         "--angle_labels", 
         type=str, 
@@ -274,13 +316,13 @@ if __name__ == "__main__":
         type=float, 
         nargs='+', 
         default=[0.5],
-        help="List of valence values to test")
+        help="List of valence values to test (used for quantitative evaluation)")
     parser.add_argument(
         "--arousal", 
         type=float, 
         nargs='+', 
         default=[0.5],
-        help="List of arousal values to test")
+        help="List of arousal values to test (used for quantitative evaluation)")
     parser.add_argument(
         "--wplus", 
         action="store_true", 
@@ -305,13 +347,12 @@ if __name__ == "__main__":
         os.makedirs(args.output_path)
         print(f"Output path '{args.output_path}' created.")
 
-    # emotion_grid mode checks
-    if args.test_mode == "emotion_grid":
-        # Check that angles and strengths are provided
+    # For emotion_grid or emotion_singles modes, check that angles and strengths are provided
+    if args.test_mode in ["emotion_grid", "emotion_singles"]:
         if args.angles is None or args.strengths is None:
-            raise ValueError("For emotion_grid mode, both --angles and --strengths must be provided.")
-        # Check that if angle labels are provided, they match the number of angles
-        if args.angle_labels is not None and len(args.angle_labels) != len(args.angles):
+            raise ValueError("For emotion_grid or emotion_singles modes, both --angles and --strengths must be provided.")
+        # For emotion_grid, optionally check if angle_labels match if provided
+        if args.test_mode == "emotion_grid" and args.angle_labels is not None and len(args.angle_labels) != len(args.angles):
             raise ValueError("If --angle_labels are provided, they must match the number of angles.")
 
     test(
