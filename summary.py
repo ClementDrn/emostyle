@@ -1,86 +1,169 @@
 import os
 import csv
 import argparse
+import math
+import numpy as np
 from collections import defaultdict
 
-def summarize(
-    input_csv: str,
-    output_csv: str = None
-): 
-    # Lists to collect overall errors
-    all_valence_errors = []
-    all_arousal_errors = []
+
+def angular_error(pred, exp):
+    # Ensure both angles are in [0,360)
+    pred = pred % 360
+    exp = exp % 360
+    diff = abs(pred - exp) % 360
+    if diff > 180:
+        diff = 360 - diff
+    return diff
+
+def compute_group_summary(items, group_type, key_val=None):
+    """
+    items: list of dict items (each with keys: predicted_angle, predicted_strength, predicted_valence,
+           predicted_arousal, angle_error, strength_error, valence_error, arousal_error)
+    group_type: one of "angle_strength", "angle", "strength", "overall"
+    key_val: for groups not by both fields, the key (angle or strength) to show.
+    Returns a dictionary with summary mean values.
+    """
+    mean_angle = np.mean([it["predicted_angle"] for it in items])
+    mean_strength = np.mean([it["predicted_strength"] for it in items])
+    mean_valence = np.mean([it["predicted_valence"] for it in items])
+    mean_arousal = np.mean([it["predicted_arousal"] for it in items])
+    mean_angle_error = np.mean([it["angle_error"] for it in items])
+    mean_strength_error = np.mean([it["strength_error"] for it in items])
+    mean_valence_error = np.mean([it["valence_error"] for it in items])
+    mean_arousal_error = np.mean([it["arousal_error"] for it in items])
+    mean_distance_error = np.mean([it["distance_error"] for it in items])
     
-    # Group errors by strength and by angle
-    strength_valence = defaultdict(list)
-    strength_arousal = defaultdict(list)
-    angle_valence = defaultdict(list)
-    angle_arousal = defaultdict(list)
+    if group_type == "angle_strength":
+        expected_angle, expected_strength = key_val
+    elif group_type == "angle":
+        expected_angle, expected_strength = key_val, "ALL"
+    elif group_type == "strength":
+        expected_angle, expected_strength = "ALL", key_val
+    else: # overall
+        expected_angle, expected_strength = "ALL", "ALL"
+        
+    return {
+        "Group Type": group_type,
+        "Expected Angle": expected_angle,
+        "Expected Strength": expected_strength,
+        "Mean Angle": f"{mean_angle:.4f}",
+        "Mean Strength": f"{mean_strength:.4f}",
+        "Mean Valence": f"{mean_valence:.4f}",
+        "Mean Arousal": f"{mean_arousal:.4f}",
+        "Mean Angle Error": f"{mean_angle_error:.4f}",
+        "Mean Strength Error": f"{mean_strength_error:.4f}",
+        "Mean Valence Error": f"{mean_valence_error:.4f}",
+        "Mean Arousal Error": f"{mean_arousal_error:.4f}",
+        "Mean Distance Error": f"{mean_distance_error:.4f}",
+    }
+
+def summarize(input_csv: str, output_csv: str = None):
+    # Group data in four ways:
+    # 1. By (expected_angle, expected_strength)
+    groups_as = defaultdict(list)
+    # 2. By expected_angle only
+    groups_angle = defaultdict(list)
+    # 3. By expected_strength only
+    groups_strength = defaultdict(list)
+    # 4. Overall
+    overall = []
     
-    with open(args.input_csv, 'r', newline='') as f:
+    with open(input_csv, 'r', newline='') as f:
         reader = csv.DictReader(f)
         for row in reader:
             try:
-                error_val = float(row["error_valence"])
-                error_arr = float(row["error_arousal"])
+                # Get errors computed from evaluate.py
+                val_err = float(row["error_valence"])
+                arr_err = float(row["error_arousal"])
+                
+                # Expected angle and strength from filename.
+                filename = row["filename"]
+                base = os.path.splitext(filename)[0]
+                tokens = base.split('_')
+                if len(tokens) < 2:
+                    continue
+                expected_angle = float(tokens[-2])
+                expected_strength = float(tokens[-1])
+                
+                # Predicted valence and arousal are available.
+                pred_val = float(row["predicted_valence"])
+                pred_arr = float(row["predicted_arousal"])
+                
+                # Compute predicted angle in degrees (wrap to [0,360)) and strength.
+                raw_angle = math.degrees(math.atan2(pred_arr, pred_val))
+                pred_angle = raw_angle % 360
+                pred_strength = math.sqrt(pred_val**2 + pred_arr**2)
+
+                # Compute distance error.
+                distance_err = math.sqrt(val_err**2 + arr_err**2)
+                
+                # Compute additional errors.
+                ang_err = angular_error(pred_angle, expected_angle)
+                str_err = abs(pred_strength - expected_strength)
+                
+                item = {
+                    "expected_angle": expected_angle,
+                    "expected_strength": expected_strength,
+                    "predicted_angle": pred_angle,
+                    "predicted_strength": pred_strength,
+                    "predicted_valence": pred_val,
+                    "predicted_arousal": pred_arr,
+                    "valence_error": val_err,
+                    "arousal_error": arr_err,
+                    "angle_error": ang_err,
+                    "strength_error": str_err,
+                    "distance_error": distance_err
+                }
+                key = (expected_angle, expected_strength)
+                groups_as[key].append(item)
+                groups_angle[expected_angle].append(item)
+                groups_strength[expected_strength].append(item)
+                overall.append(item)
             except Exception:
                 continue
-            
-            all_valence_errors.append(error_val)
-            all_arousal_errors.append(error_arr)
-            
-            # Extract angle and strength from filename
-            filename = row["filename"]
-            base = os.path.splitext(filename)[0]
-            tokens = base.split('_')
-            if len(tokens) < 2:
-                continue
-            try:
-                angle = float(tokens[-2])
-                strength = float(tokens[-1])
-            except Exception:
-                continue
-            
-            strength_valence[strength].append(error_val)
-            strength_arousal[strength].append(error_arr)
-            angle_valence[angle].append(error_val)
-            angle_arousal[angle].append(error_arr)
+
+    summary_rows = []
+    # Summaries by (angle, strength)
+    for key, items in groups_as.items():
+        summary_rows.append(compute_group_summary(items, "angle_strength", key))
+    # Summaries by angle only.
+    for angle, items in groups_angle.items():
+        summary_rows.append(compute_group_summary(items, "angle", angle))
+    # Summaries by strength only.
+    for strength, items in groups_strength.items():
+        summary_rows.append(compute_group_summary(items, "strength", strength))
+    # Overall summary.
+    summary_rows.append(compute_group_summary(overall, "overall"))
     
-    overall_valence_mean = (sum(all_valence_errors) / len(all_valence_errors)
-                            if all_valence_errors else 0)
-    overall_arousal_mean = (sum(all_arousal_errors) / len(all_arousal_errors)
-                            if all_arousal_errors else 0)
+    # Sort summary rows by group type (angle_strength -> angle -> strength, overall), and then by expected angle/strength.
+    summary_rows.sort(key=lambda x: (
+        x["Group Type"] == "overall",
+        x["Group Type"] == "strength",
+        x["Group Type"] == "angle",
+        x["Expected Angle"] if x["Expected Angle"] != "ALL" else float('inf'),
+        x["Expected Strength"] if x["Expected Strength"] != "ALL" else float('inf')))
+
+    # Print summary to console.
+    print("Summary Statistics:")
+    for row in summary_rows:
+        print(f"[{row['Group Type']}] Expected Angle: {row['Expected Angle']}, Expected Strength: {row['Expected Strength']}")
+        print(f"  Mean Angle: {row['Mean Angle']}, Mean Strength: {row['Mean Strength']}")
+        print(f"  Mean Valence: {row['Mean Valence']}, Mean Arousal: {row['Mean Arousal']}")
+        print(f"  Mean Angle Error: {row['Mean Angle Error']}, Mean Strength Error: {row['Mean Strength Error']}")
+        print(f"  Mean Valence Error: {row['Mean Valence Error']}, Mean Arousal Error: {row['Mean Arousal Error']}")
+        print()
     
-    print("Overall Quantitative Evaluation Results:")
-    print(f"  Overall Mean Valence Error: {overall_valence_mean:.4f}")
-    print(f"  Overall Mean Arousal  Error: {overall_arousal_mean:.4f}")
-    
-    print("\nMean Error by Strength:")
-    for s in sorted(strength_valence.keys()):
-        mean_val = sum(strength_valence[s]) / len(strength_valence[s])
-        mean_arr = sum(strength_arousal[s]) / len(strength_arousal[s])
-        print(f"  Strength {s}: Valence Mean Error = {mean_val:.4f}, Arousal Mean Error = {mean_arr:.4f}")
-    
-    print("\nMean Error by Angle:")
-    for a in sorted(angle_valence.keys()):
-        mean_val = sum(angle_valence[a]) / len(angle_valence[a])
-        mean_arr = sum(angle_arousal[a]) / len(angle_arousal[a])
-        print(f"  Angle {a}°: Valence Mean Error = {mean_val:.4f}, Arousal Mean Error = {mean_arr:.4f}")
-    
-    if args.output_csv:
-        with open(args.output_csv, 'w', newline='') as out_csv:
-            writer = csv.writer(out_csv)
-            writer.writerow(["Group", "Value", "Mean Valence Error", "Mean Arousal Error"])
-            writer.writerow(["Overall", "", f"{overall_valence_mean:.4f}", f"{overall_arousal_mean:.4f}"])
-            for s in sorted(strength_valence.keys()):
-                mean_val = sum(strength_valence[s]) / len(strength_valence[s])
-                mean_arr = sum(strength_arousal[s]) / len(strength_arousal[s])
-                writer.writerow(["Strength", s, f"{mean_val:.4f}", f"{mean_arr:.4f}"])
-            for a in sorted(angle_valence.keys()):
-                mean_val = sum(angle_valence[a]) / len(angle_valence[a])
-                mean_arr = sum(angle_arousal[a]) / len(angle_arousal[a])
-                writer.writerow(["Angle", a, f"{mean_val:.4f}", f"{mean_arr:.4f}"])
-        print(f"\nSummary statistics written to {args.output_csv}")
+    # Write summary CSV if requested.
+    if output_csv:
+        header = ["Group Type", "Expected Angle", "Expected Strength", "Mean Angle", "Mean Strength",
+                  "Mean Valence", "Mean Arousal", "Mean Angle Error", "Mean Strength Error",
+                  "Mean Valence Error", "Mean Arousal Error", "Mean Distance Error"]
+        with open(output_csv, 'w', newline='') as out_csv:
+            writer = csv.DictWriter(out_csv, fieldnames=header)
+            writer.writeheader()
+            for row in summary_rows:
+                writer.writerow(row)
+        print(f"Summary statistics written to {output_csv}")
 
 
 if __name__ == "__main__":
@@ -98,10 +181,8 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
 
-    # Ensure input CSV file exists
     if not os.path.exists(args.input_csv):
         raise FileNotFoundError(f"Input CSV file '{args.input_csv}' does not exist.")
-    # Ensure output CSV directory exists
     if args.output_csv:
         output_dir = os.path.dirname(args.output_csv)
         if output_dir and not os.path.exists(output_dir):
