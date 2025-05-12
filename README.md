@@ -62,7 +62,7 @@ python3 -m venv .venv
 
 Install other dependencies
 ```sh
-.venv/bin/pip3 install requests tqdm Ninja matplotlib lpips scikit-image
+.venv/bin/pip3 install requests tqdm Ninja matplotlib lpips scikit-image pandas
 ```
 
 Activate virtual environment in your shell before running any Python script.
@@ -192,6 +192,29 @@ python test.py \
 <br>
 
 </div>
+
+
+### Qualitative evaluation
+
+```sh
+python test.py --images_path dataset/test/ --test_mode emotion_grid --angles 7.8 24.9 48.6 69.8 73.8 92.8 96.5 99 116 123 138 141 188.7 207.5 209 211 242 256.7 267.7 271.9 316.2 318 319 321 323 328.6 349 353.2 --strengths 0 0.33 0.66 1 --angle_labels Happy Delighted Excited Astonished Aroused Tense Alarmed Angry Afraid Annoyed Distressed Frustrated Miserable Sad Gloomy Depressed Bored Droopy Tired Sleepy Calm Relaxed Satisfied At_ease Content Serene Glad Pleased --wplus --cpu
+```
+
+```sh
+python test.py --test_mode emotion_transition --angles 323 99 7.8 207.5 116 69.8 --strengths 1.0 1.0 1.0 1.0 1.0 1.0 --angle_labels Content Angry Happy Sad Afraid Astonished --output_path results/qualitative --wplus --cpu --images_path dataset/qualitative_3
+```
+
+
+### Quantitative evaluation
+
+```sh
+python plot.py emotion_dist [--separate_strengths] [--separate_angles]
+```
+```sh
+python plot.py emotion_dist
+python plot.py emotion_dist --separate_angles
+python plot.py emotion_dist --separate_strengths
+```
 
 ## Citation
 

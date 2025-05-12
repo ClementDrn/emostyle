@@ -106,7 +106,7 @@ def test(
             axs = [[ax] for ax in axs] if n_rows > 1 else [[axs]]
             
         # Iterate over each angle and strength to generate the image grid.
-        for i, angle in enumerate(angles):
+        for pair_index, angle in enumerate(angles):
             # Convert to radians and compute base vector (using cosine and sine)
             rad = np.deg2rad(angle)
             base_valence = np.cos(rad)
@@ -121,13 +121,13 @@ def test(
                 generated_image = generated_image_tensor.detach().cpu().squeeze().numpy()
                 generated_image = np.clip(generated_image*255, 0, 255).astype(np.uint8)
                 generated_image = generated_image.transpose(1, 2, 0)
-                axs[i][j].imshow(generated_image)
-                axs[i][j].axis('off')
-                axs[i][j].set_title(f"Angle:{angle}°\nStrength:{strength}", fontsize=10)
+                axs[pair_index][j].imshow(generated_image)
+                axs[pair_index][j].axis('off')
+                axs[pair_index][j].set_title(f"Angle:{angle}°\nStrength:{strength}", fontsize=10)
             # If angle_labels are provided, add a label text on the right of each image row.
             if angle_labels is not None:
-                print(f"Angle label: {angle_labels[i]}")
-                axs[i][0].text(-0.5, 0.5, angle_labels[i], fontsize=20, ha='center', va='center', rotation=90, transform=axs[i][0].transAxes)
+                print(f"Angle label: {angle_labels[pair_index]}")
+                axs[pair_index][0].text(-0.5, 0.5, angle_labels[pair_index], fontsize=20, ha='center', va='center', rotation=90, transform=axs[pair_index][0].transAxes)
                 
         # Save the grid of images
         grid_output_path = os.path.join(output_path, f"grid_{image_name}.png")
@@ -177,8 +177,121 @@ def test(
                     out_filename = os.path.join(output_path, f"{image_name}_{angle}_{strength}.png")
                     plt.imsave(out_filename, generated_image)
         return
+    
+    elif test_mode == 'emotion_transition':
+        # emotion_transition mode:
+        # - For each image in image_path, compile a series of generated images
+        #   that transition from one emotion to another.
+        # - The emotions to transition between are defined by the provided angles and strengths.
+        #   In angles and strengths arrays, every two consecutive values are used to define a transition.
+        #   So if angles = [0, 45, 90, 180] and strengths = [0.5, 1.0, 1.0, 0.8], the transitions will be:
+        #   - (0, 0.5) to (45, 1.0) and (90, 1.0) to (180, 0.8)
+        # - The generated images are saved as a single file, with images from left to right.
+        # - A progress bar from tqdm shows the processing status.
+        image_files = [os.path.join(images_path, filename) for filename in os.listdir(images_path) if filename.endswith('.png')]
+        if not image_files:
+            raise FileNotFoundError(f"No PNG files found in '{images_path}'")
+        if len(angles) != len(strengths):
+            raise ValueError("The number of angles must match the number of strengths.")
+        if len(angles) % 2 != 0:
+            raise ValueError("The number of angles must be even for transitions.")
+        if len(strengths) % 2 != 0:
+            raise ValueError("The number of strengths must be even for transitions.")
+        
+        for image_file in tqdm(sorted(image_files), desc="Processing images"):
+            image_name = os.path.splitext(os.path.basename(image_file))[0]
+            latent_path = os.path.splitext(image_file)[0] + '.npy'
+            image_latent = np.load(latent_path, allow_pickle=False)
+            if wplus:
+                image_latent = np.expand_dims(image_latent[:, :], 0)
+            else:
+                image_latent = np.expand_dims(image_latent[0, :], 0)
+            latent = torch.from_numpy(image_latent).float().to(device)
 
-    if test_mode == 'random':
+            # For every two consecutive angles and strengths, generate and save an output image.
+            num_pairs = len(angles) // 2
+            transition_step_count = 10
+            for pair_index in tqdm(range(num_pairs), desc="Generating transitions"):
+                generated_images = []
+                # Get the two angles and strengths for the transition
+                first_index = pair_index * 2
+                second_index = first_index + 1
+                angle1 = angles[first_index]
+                angle2 = angles[second_index]
+                strength1 = strengths[first_index]
+                strength2 = strengths[second_index]
+
+                # Compute the transition between the two angles and strengths
+                rad1 = np.deg2rad(angle1)
+                rad2 = np.deg2rad(angle2)
+                base_valence1 = np.cos(rad1)
+                base_arousal1 = np.sin(rad1)
+                base_valence2 = np.cos(rad2)
+                base_arousal2 = np.sin(rad2)
+
+                # Interpolate between the two emotions
+                for t in np.linspace(0, 1, num=transition_step_count):
+                    valence = (1 - t) * base_valence1 + t * base_valence2
+                    arousal = (1 - t) * base_arousal1 + t * base_arousal2
+                    strength = (1 - t) * strength1 + t * strength2
+
+                    emotion_vector = torch.FloatTensor([[valence * strength, arousal * strength]]).to(device)
+                    fake_latents = latent + emo_mapping(latent, emotion_vector)
+                    generated_image_tensor = stylegan.generate(fake_latents)
+                    generated_image_tensor = (generated_image_tensor + 1.) / 2.
+                    generated_image = generated_image_tensor.detach().cpu().squeeze().numpy()
+                    generated_image = np.clip(generated_image*255, 0, 255).astype(np.uint8)
+                    generated_image = generated_image.transpose(1, 2, 0)
+                    
+                    generated_images.append(generated_image)
+
+                # Save the generated images as a single file
+                transition_output_path = os.path.join(output_path, f"transition_{image_name}_{pair_index}.png")
+                # Create a grid of images without any gaps
+                num_images = len(generated_images)
+                grid_rows = 1
+                grid_cols = num_images
+                fig, axs = plt.subplots(
+                    grid_rows,
+                    grid_cols,
+                    figsize=(grid_cols * 5, grid_rows * 5),
+                    gridspec_kw={'wspace': 0, 'hspace': 0}
+                )
+
+                for img_index in range(num_images):
+                    axs[img_index].imshow(generated_images[img_index])
+                    axs[img_index].axis('off')
+
+                # Add title for first and last frames
+                font_size = 20
+                if angle_labels is not None:
+                    axs[0].set_title(
+                        f"{angle_labels[first_index]}: {angles[first_index]}°\nStrength: {strengths[first_index]}",
+                        fontsize=font_size
+                    )
+                    axs[-1].set_title(
+                        f"{angle_labels[second_index]}: {angles[second_index]}°\nStrength: {strengths[second_index]}",
+                        fontsize=font_size
+                    )
+                else:
+                    axs[0].set_title(
+                        f"Angle: {angles[first_index]}°\nStrength: {strengths[first_index]}",
+                        fontsize=font_size
+                    )
+                    axs[-1].set_title(
+                        f"Angle: {angles[second_index]}°\nStrength: {strengths[second_index]}",
+                        fontsize=font_size
+                    )
+
+                # Remove all margins
+                plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
+                plt.savefig(transition_output_path, bbox_inches='tight', pad_inches=0)
+                plt.close('all')
+        print(f"Saved transition images to {transition_output_path}")
+        return
+
+
+    elif test_mode == 'random':
         # random mode:
         # - Randomly samples 100 image indices from 1 to 70000.
         # - Saves the random sample indices for reproducibility.
@@ -291,14 +404,18 @@ if __name__ == "__main__":
         "--test_mode", 
         type=str, 
         default="random", 
-        choices=["random", "folder_images", "emotion_grid", "emotion_singles"],
-        help="Mode of testing: 'random' for random images, 'folder_images' for images in a folder, 'emotion_grid' for a grid of emotions, 'emotion_singles' for generating independent images per emotion")
+        choices=["random", "folder_images", "emotion_grid", "emotion_singles", "emotion_transition"],
+        help="Mode of testing: 'random' for random images, "
+            "'folder_images' for images in a folder, "
+            "'emotion_grid' for a grid of emotions, "
+            "'emotion_singles' for generating independent images per emotion"
+            "'emotion_transition' for generating a transition between pairs of emotions")
     parser.add_argument(
         "--angles", 
         type=float, 
         nargs='+',
         default=None,
-        help="List of angles (in degrees) to use for the emotion grid or singles (top-to-bottom)")
+        help="List of angles (in degrees) to use for the emotion grid (top-to-bottom), singles or transition")
     parser.add_argument(
         "--angle_labels", 
         type=str, 
@@ -310,7 +427,7 @@ if __name__ == "__main__":
         type=float, 
         nargs='+',
         default=None,
-        help="List of strength values to scale the emotion vector (left-to-right)")
+        help="List of strength values to scale the emotion vector of emotion grid (left-to-right), singles or transition")
     parser.add_argument(
         "--valence", 
         type=float, 
