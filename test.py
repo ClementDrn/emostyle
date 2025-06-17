@@ -106,29 +106,34 @@ def test(
             axs = [[ax] for ax in axs] if n_rows > 1 else [[axs]]
             
         # Iterate over each angle and strength to generate the image grid.
-        for pair_index, angle in enumerate(angles):
-            # Convert to radians and compute base vector (using cosine and sine)
+        for row_idx, angle in enumerate(angles):
             rad = np.deg2rad(angle)
             base_valence = np.cos(rad)
             base_arousal = np.sin(rad)
-            for j, strength in enumerate(strengths):
-                # Scale the emotion vector by strength
+            for col_idx, strength in enumerate(strengths):
                 emotion_vector = torch.FloatTensor([[base_valence * strength, base_arousal * strength]]).to(device)
                 fake_latents = base_latent + emo_mapping(base_latent, emotion_vector)
                 generated_image_tensor = stylegan.generate(fake_latents)
                 generated_image_tensor = (generated_image_tensor + 1.) / 2.
-                # Convert generated image tensor to numpy image (HWC, uint8)
                 generated_image = generated_image_tensor.detach().cpu().squeeze().numpy()
                 generated_image = np.clip(generated_image*255, 0, 255).astype(np.uint8)
                 generated_image = generated_image.transpose(1, 2, 0)
-                axs[pair_index][j].imshow(generated_image)
-                axs[pair_index][j].axis('off')
-                axs[pair_index][j].set_title(f"Angle:{angle}°\nStrength:{strength}", fontsize=10)
-            # If angle_labels are provided, add a label text on the right of each image row.
+                axs[row_idx][col_idx].imshow(generated_image)
+                axs[row_idx][col_idx].axis('off')
+            # Add left-side text on the first column with the angle (and label if provided)
+            label_text = f"{angle}°"
             if angle_labels is not None:
-                print(f"Angle label: {angle_labels[pair_index]}")
-                axs[pair_index][0].text(-0.5, 0.5, angle_labels[pair_index], fontsize=20, ha='center', va='center', rotation=90, transform=axs[pair_index][0].transAxes)
+                label_text = f"{angle}°\n{angle_labels[row_idx]}"
+            axs[row_idx][0].text(-0.2, 0.5, label_text, fontsize=20, ha='right', va='center',
+                rotation=90, transform=axs[row_idx][0].transAxes)
                 
+        # Set top row titles for strengths.
+        for col_idx, strength in enumerate(strengths):
+            axs[0][col_idx].set_title(f"Strength: {strength}", fontsize=20, pad=10)
+                    
+        # Remove margins between subplots.
+        plt.subplots_adjust(wspace=0, hspace=0)
+                    
         # Save the grid of images
         grid_output_path = os.path.join(output_path, f"grid_{image_name}.png")
         plt.savefig(grid_output_path, bbox_inches='tight')
