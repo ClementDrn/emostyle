@@ -3,6 +3,7 @@ import argparse
 import pandas as pd
 import numpy as np
 from itertools import product
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 from tqdm import tqdm  # import tqdm for the progress bar
@@ -485,7 +486,8 @@ def plot_error_boxes(
 
     # Grouped boxplot helper (for compare_ mode).
     def grouped_boxplot(groups, positions, xtick_labels, title, out_fname):
-        fig, ax = plt.subplots(figsize=(max(8, len(xtick_labels)*1.5), 4))
+        mpl.rcParams.update({'font.size': max(10, len(groups["Angle"]) * 0.7)})
+        fig, ax = plt.subplots(figsize=(max(8, len(xtick_labels)*1.5), max(4, len(groups["Angle"])*0.4)))
         # Create a twin axis.
         ax2 = ax.twinx()
         
