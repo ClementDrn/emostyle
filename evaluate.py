@@ -28,6 +28,7 @@ def load_emonet(device):
 def evaluate_quantitatively(
     input_dir,
     output_csv=None,
+    append=False,
     cpu=False
 ):
     # Use CPU if asked to or if CUDA is not available
@@ -48,21 +49,34 @@ def evaluate_quantitatively(
     
     results = []
     for image_file in tqdm(sorted(image_files), desc="Evaluating images"):
+        # Fetch image info from filename
+        # Expected format: {imagename}_{angle}_{strength}.png or {imagename}_va_{valence}_{arousal}.png
         basename = os.path.basename(image_file)
         name_no_ext = os.path.splitext(basename)[0]
         tokens = name_no_ext.split('_')
-        # Expecting last two tokens to be angle and strength
-        try:
+        expected_valence = None
+        expected_arousal = None
+        expected_angle = None
+        expected_strength = None
+        is_va_format = None
+
+        if len(tokens) > 3 and tokens[-3] == 'va':
+            # Format: {imagename}_va_{valence}_{arousal}.png
+            is_va_format = True
+            expected_valence = float(tokens[-2])
+            expected_arousal = float(tokens[-1])
+        elif len(tokens) > 2:
+            # Format: {imagename}_{angle}_{strength}.png
+            is_va_format = False
             expected_angle = float(tokens[-2])
             expected_strength = float(tokens[-1])
-        except Exception as e:
-            print(f"Skipping file {basename}: unable to parse angle and strength")
+            # Compute expected valence and arousal.
+            rad = np.deg2rad(expected_angle)
+            expected_valence = np.cos(rad) * expected_strength
+            expected_arousal = np.sin(rad) * expected_strength
+        else:
+            print(f"Skipping file {basename}: unexpected format")
             continue
-        
-        # Compute expected valence and arousal.
-        rad = np.deg2rad(expected_angle)
-        expected_valence = np.cos(rad) * expected_strength
-        expected_arousal = np.sin(rad) * expected_strength
         
         # Load image and convert to tensor.
         try:
@@ -78,8 +92,9 @@ def evaluate_quantitatively(
         predicted_valence = emo_embed[0, 0].item()
         predicted_arousal = emo_embed[0, 1].item()
         
-        error_valence = abs(predicted_valence - expected_valence)
-        error_arousal = abs(predicted_arousal - expected_arousal)
+        # Signed errors
+        error_valence = predicted_valence - expected_valence
+        error_arousal = predicted_arousal - expected_arousal
         
         results.append((basename, expected_valence, expected_arousal, predicted_valence, predicted_arousal, error_valence, error_arousal))
     
@@ -87,17 +102,20 @@ def evaluate_quantitatively(
         print("No valid evaluations were performed.")
         return
     
-    avg_error_valence = np.mean([r[5] for r in results])
-    avg_error_arousal = np.mean([r[6] for r in results])
+    avg_abs_error_valence = np.mean([abs(r[5]) for r in results])
+    avg_abs_error_arousal = np.mean([abs(r[6]) for r in results])
     
     print("\nQuantitative Evaluation Results:")
-    print(f"Average error in Valence: {avg_error_valence:.4f}")
-    print(f"Average error in Arousal: {avg_error_arousal:.4f}")
+    print(f"Average absolute error in Valence: {avg_abs_error_valence:.4f}")
+    print(f"Average absolute error in Arousal: {avg_abs_error_arousal:.4f}")
     
     if output_csv:
-        with open(output_csv, 'w', newline='') as csvfile:
+        does_file_already_exist = os.path.exists(output_csv)
+        with open(output_csv, 'a' if append else 'w', newline='') as csvfile:
             writer = csv.writer(csvfile)
-            writer.writerow(["filename", "expected_valence", "expected_arousal", "predicted_valence", "predicted_arousal", "error_valence", "error_arousal"])
+            # Write header only if the file does not exist or if not appending
+            if not does_file_already_exist or not append:
+                writer.writerow(["filename", "expected_valence", "expected_arousal", "predicted_valence", "predicted_arousal", "error_valence", "error_arousal"])
             for row in results:
                 writer.writerow(row)
         print(f"Detailed results written to {output_csv}")
@@ -118,6 +136,11 @@ if __name__ == '__main__':
         default=None,
         help="Optional output CSV file to store per-image evaluation results")
     parser.add_argument(
+        "--append", 
+        "-a",
+        action="store_true", 
+        help="Append results to the output CSV file if it exists")
+    parser.add_argument(
         "--cpu", 
         action="store_true", 
         help="Use CPU instead of GPU")
@@ -137,5 +160,6 @@ if __name__ == '__main__':
     evaluate_quantitatively(
         input_dir=args.input_dir,
         output_csv=args.output_csv,
+        append=args.append,
         cpu=args.cpu
     )

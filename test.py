@@ -144,17 +144,42 @@ def test(
     elif test_mode == 'emotion_singles':
         # emotion_singles mode:
         # - For each image in images_path, generate an image for each combination
-        #   of provided angles and strengths.
-        # - The emotion vector is computed as:
+        #   of provided angles and strengths or provided valences and arousals.
+        # - If angles and strengths are provided, the emotion vector is computed as:
         #       (cos(angle in radians) * strength, sin(angle in radians) * strength)
+        # - If valence and arousal are provided, the emotion vector is computed as:
+        #       (valence, arousal)
         # - Generated images are saved as independent files named:
         #       {imagename}_{angle}_{strength}.png
+        #   or
+        #       {imagename}_va_{valence}_{arousal}.png
         # - No text is included in the images.
         # - A progress bar from tqdm shows the processing status.
         image_files = [os.path.join(images_path, filename) for filename in os.listdir(images_path) if filename.endswith('.png')]
         if not image_files:
             raise FileNotFoundError(f"No PNG files found in '{images_path}'")
         
+        # Check if angles and strengths are provided, otherwise use valence and arousal.
+        use_valence_arousal = angles is None or strengths is None
+        if use_valence_arousal and (not valence or not arousal):
+            raise ValueError("For emotion_singles mode, either angles and strengths must be provided, "
+                             "or valence and arousal must be provided.")
+        
+        # Generate valence-arousal pairs
+        va_pairs = []
+        if use_valence_arousal:
+            for v in valence:
+                for a in arousal:
+                    va_pairs.append((v, a))
+        else:
+            for angle in angles:
+                rad = np.deg2rad(angle)
+                base_valence = np.cos(rad)
+                base_arousal = np.sin(rad)
+                for strength in strengths:
+                    va_pairs.append((base_valence * strength, base_arousal * strength))
+
+        # Generate images for each image file and each valence-arousal pair
         for image_file in tqdm(sorted(image_files), desc="Processing images"):
             image_name = os.path.splitext(os.path.basename(image_file))[0]
             latent_path = os.path.splitext(image_file)[0] + '.npy'
@@ -166,21 +191,18 @@ def test(
             latent = torch.from_numpy(image_latent).float().to(device)
             
             # For every combination of angle and strength, generate and save an output image.
-            for angle in angles:
-                rad = np.deg2rad(angle)
-                base_valence = np.cos(rad)
-                base_arousal = np.sin(rad)
-                for strength in strengths:
-                    emotion_vector = torch.FloatTensor([[base_valence * strength, base_arousal * strength]]).to(device)
-                    fake_latents = latent + emo_mapping(latent, emotion_vector)
-                    generated_image_tensor = stylegan.generate(fake_latents)
-                    generated_image_tensor = (generated_image_tensor + 1.) / 2.
-                    generated_image = generated_image_tensor.detach().cpu().squeeze().numpy()
-                    generated_image = np.clip(generated_image*255, 0, 255).astype(np.uint8)
-                    generated_image = generated_image.transpose(1, 2, 0)
-                    
-                    out_filename = os.path.join(output_path, f"{image_name}_{angle}_{strength}.png")
-                    plt.imsave(out_filename, generated_image)
+            for v, a in tqdm(va_pairs, desc=f"Generating images for {image_name}"):
+                emotion_vector = torch.FloatTensor([[v, a]]).to(device)
+                fake_latents = latent + emo_mapping(latent, emotion_vector)
+                generated_image_tensor = stylegan.generate(fake_latents)
+                generated_image_tensor = (generated_image_tensor + 1.) / 2.
+                generated_image = generated_image_tensor.detach().cpu().squeeze().numpy()
+                generated_image = np.clip(generated_image * 255, 0, 255).astype(np.uint8)
+                generated_image = generated_image.transpose(1, 2, 0)
+                
+                # out_filename = os.path.join(output_path, f"{image_name}_{angle}_{strength}.png")
+                out_filename = os.path.join(output_path, f"{image_name}_va_{v}_{a}.png")
+                plt.imsave(out_filename, generated_image)
         return
     
     elif test_mode == 'emotion_transition':
@@ -469,12 +491,12 @@ if __name__ == "__main__":
         os.makedirs(args.output_path)
         print(f"Output path '{args.output_path}' created.")
 
-    # For emotion_grid or emotion_singles modes, check that angles and strengths are provided
-    if args.test_mode in ["emotion_grid", "emotion_singles"]:
+    # For emotion_grid mode, check that angles and strengths are provided
+    if args.test_mode in ["emotion_grid"]:
         if args.angles is None or args.strengths is None:
-            raise ValueError("For emotion_grid or emotion_singles modes, both --angles and --strengths must be provided.")
+            raise ValueError("For emotion_grid mode, both --angles and --strengths must be provided.")
         # For emotion_grid, optionally check if angle_labels match if provided
-        if args.test_mode == "emotion_grid" and args.angle_labels is not None and len(args.angle_labels) != len(args.angles):
+        if args.angle_labels is not None and len(args.angle_labels) != len(args.angles):
             raise ValueError("If --angle_labels are provided, they must match the number of angles.")
 
     test(

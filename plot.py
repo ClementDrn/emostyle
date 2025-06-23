@@ -6,6 +6,7 @@ from itertools import product
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
+import matplotlib.lines as mlines
 from tqdm import tqdm  # import tqdm for the progress bar
 
 
@@ -634,13 +635,208 @@ def plot_error_boxes(
         return
 
 
+def plot_error_heat_map(
+    evaluation_csv: str, 
+    output_dir: str, 
+    steps: int = 10,
+    interpolation: str = "quadric",
+    component: str = "both"
+):
+    """
+    Generates a heatmap of error(s) computed from evaluation_csv.
+    
+    For component=="both", an integrated 2D heatmap is generated where:
+    - Red channel encodes average valence error
+    - Green channel encodes average arousal error
+    - Blue is fixed (0.5)
+    This produces a 2D color map with integrated legend.
+    
+    For component=="valence" or "arousal", a single-component heatmap is generated
+    using a red or green colormap respectively.
+    
+    The error normalization is such that 0 error maps to 0.5 (or the middle of the colormap),
+    -max maps to 0 and +max maps to 1 for the integrated RGB map.
+    
+    Parameters:
+    - evaluation_csv: CSV file with columns:
+        filename, expected_valence, expected_arousal, predicted_valence, 
+        predicted_arousal, error_valence, error_arousal
+    - output_dir: folder in which to save the plot
+    - steps: grid resolution (default=10)
+    - interpolation: interpolation method for imshow (default: "quadric")
+    - component: one of "both" (default), "valence", or "arousal"
+    """
+    df = pd.read_csv(evaluation_csv)
+
+    # Determine grid boundaries from expected values.
+    x_min, x_max = df["expected_valence"].min(), df["expected_valence"].max()
+    y_min, y_max = df["expected_arousal"].min(), df["expected_arousal"].max()
+
+    # Create grid bins.
+    x_bins = np.linspace(x_min, x_max, steps+1)
+    y_bins = np.linspace(y_min, y_max, steps+1)
+
+    # Prepare grids for average errors.
+    heatmap_v = np.full((steps, steps), np.nan)
+    heatmap_a = np.full((steps, steps), np.nan)
+
+    # Loop over grid cells.
+    for i in range(steps):
+        for j in range(steps):
+            x_low, x_high = x_bins[i], x_bins[i+1]
+            y_low, y_high = y_bins[j], y_bins[j+1]
+            subset = df[
+                (df["expected_valence"] >= x_low) & (df["expected_valence"] < x_high) &
+                (df["expected_arousal"] >= y_low) & (df["expected_arousal"] < y_high)
+            ]
+            if not subset.empty:
+                heatmap_v[j, i] = subset["error_valence"].mean()
+                heatmap_a[j, i] = subset["error_arousal"].mean()
+            else:
+                heatmap_v[j, i] = np.nan
+                heatmap_a[j, i] = np.nan
+
+    # Both valence and arousal heatmap
+    if component == "both":
+        # Normalize each error heatmap to a [0,1] scale using a diverging normalization:
+        # 0 error becomes 0.5, positive errors increase toward 1, negative errors decrease toward 0.
+        max_abs_v = np.nanmax(np.abs(heatmap_v))
+        max_abs_a  = np.nanmax(np.abs(heatmap_a))
+        # Avoid division by zero.
+        if max_abs_v == 0: 
+            max_abs_v = 1
+        if max_abs_a == 0:
+            max_abs_a = 1
+
+        norm_val = 0.5 + 0.5 * (heatmap_v / max_abs_v)
+        norm_ar  = 0.5 + 0.5 * (heatmap_a / max_abs_a)
+
+        # Build an RGB image: red channel encodes valence error, green channel encodes arousal error.
+        rgb_image = np.zeros((steps, steps, 3))
+        rgb_image[..., 0] = norm_val      # Red channel.
+        rgb_image[..., 1] = norm_ar       # Green channel.
+        rgb_image[..., 2] = .5            # Blue constant across cells.
+
+        # Plot the RGB image.
+        fig, ax = plt.subplots(figsize=(9, 9))
+        im = ax.imshow(rgb_image, origin="lower",
+                    extent=[x_min, x_max, y_min, y_max],
+                    aspect="equal",
+                    interpolation="quadric")
+        ax.set_xlabel("Expected Valence")
+        ax.set_ylabel("Expected Arousal")
+        ax.set_title("Average 2D Error Vector Heatmap")
+
+        # Create an integrated 2D colorbar (legend) as an inset axis.
+        # This shows the mapping for both valence and arousal errors.
+        res = 256
+        x_cb = np.linspace(-1, 1, res)
+        y_cb = np.linspace(-1, 1, res)
+        xx, yy = np.meshgrid(x_cb, y_cb)
+        rgb_cb = np.zeros((res, res, 3))
+        # Normalize errors using the same formula: 0 error -> 0.5, -1 -> 0, +1 -> 1
+        rgb_cb[..., 0] = 0.5 + 0.5 * xx   # Valence error mapping -> Red channel
+        rgb_cb[..., 1] = 0.5 + 0.5 * yy   # Arousal error mapping -> Green channel
+        rgb_cb[..., 2] = 0.5              # Blue
+        
+        # Add a new axes for the integrated colorbar.
+        ax_cb = fig.add_axes([1.0, 0.4, 0.2, 0.2])  # Adjust position/size as needed.
+        ax_cb.imshow(rgb_cb, origin="lower", extent=[-1, 1, -1, 1], aspect="auto")
+        ax_cb.set_xlabel("Valence Error", fontsize=10)
+        ax_cb.set_ylabel("Arousal Error", fontsize=10)
+        ax_cb.set_title("Legend", fontsize=10)
+        # Add ticks and labels (unormalized).
+        ax_cb.set_xticks([-1, 0, 1])
+        ax_cb.set_xticklabels([f"{-max_abs_v:.2f}", "0", f"{max_abs_v:.2f}"], fontsize=10)
+        ax_cb.set_yticks([-1, 0, 1])
+        ax_cb.set_yticklabels([f"{-max_abs_a:.2f}", "0", f"{max_abs_a:.2f}"], fontsize=10)
+
+    
+    # Valence only heatmap
+    elif component == "valence":
+        # Get max absolute value for normalization.
+        max_abs_v = np.nanmax(np.abs(heatmap_v))
+        if max_abs_v == 0:
+            max_abs_v = 1
+
+        # Custom cmap: red channel varies, green and blue are fixed.
+        cmap = mcolors.LinearSegmentedColormap.from_list(
+            "valence_error_cmap",
+            [(0.0, 0.5, 0.5), (1.0, 0.5, 0.5)], 
+            N=256
+        )
+
+        # Create the heatmap plot.
+        fig, ax = plt.subplots(figsize=(9, 8))
+        im = ax.imshow(
+            heatmap_v,
+            cmap=cmap,
+            norm=mcolors.Normalize(vmin=-max_abs_v, vmax=max_abs_v),
+            origin="lower",
+            extent=[x_min, x_max, y_min, y_max],
+            aspect="equal",
+            interpolation=interpolation
+        )
+        ax.set_xlabel("Expected Valence")
+        ax.set_ylabel("Expected Arousal")
+        ax.set_title("Average Valence Error Heatmap")
+        
+        # Add a colorbar legend
+        cbar = fig.colorbar(im, ax=ax, orientation='vertical')
+        cbar.set_label("Valence Error", fontsize=10)
+        cbar.ax.tick_params(labelsize=10)
+
+    # Arousal only heatmap
+    elif component == "arousal":
+        # Get max absolute value for normalization.
+        max_abs_a = np.nanmax(np.abs(heatmap_a))
+        if max_abs_a == 0:
+            max_abs_a = 1
+
+        # Custom cmap: green channel varies, red and blue are fixed.
+        cmap = mcolors.LinearSegmentedColormap.from_list(
+            "arousal_error_cmap",
+            [(0.5, 0.0, 0.5), (0.5, 1.0, 0.5)], 
+            N=256
+        )
+
+        # Create the heatmap plot.
+        fig, ax = plt.subplots(figsize=(9, 8))
+        im = ax.imshow(
+            heatmap_a,
+            cmap=cmap,
+            norm=mcolors.Normalize(vmin=-max_abs_a, vmax=max_abs_a),
+            origin="lower",
+            extent=[x_min, x_max, y_min, y_max],
+            aspect="equal",
+            interpolation=interpolation
+        )
+        ax.set_xlabel("Expected Valence")
+        ax.set_ylabel("Expected Arousal")
+        ax.set_title("Average Arousal Error Heatmap")
+        
+        # Add a colorbar legend
+        cbar = fig.colorbar(im, ax=ax, orientation='vertical')
+        cbar.set_label("Arousal Error", fontsize=10)
+        cbar.ax.tick_params(labelsize=10)
+
+    else:
+        raise ValueError("Invalid heatmap component. Choose among 'both', 'valence', or 'arousal'.")
+
+    # Save the figure.
+    os.makedirs(output_dir, exist_ok=True)
+    out_file = os.path.join(output_dir, f"error_heat_map_{component}.png")
+    fig.savefig(out_file, bbox_inches="tight")
+    plt.close(fig)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Summarize quantitative evaluation results from CSV and generate emotion distribution plots")
     parser.add_argument(
         "plot_type",
         type=str,
-        choices=["emotion_dist", "error_bars", "error_boxes"],
-        help="Type of plot to generate: 'emotion_dist' for expected and predicted emotion distribution, 'error_bars' for error bar plots")
+        choices=["emotion_dist", "error_bars", "error_boxes", "error_heat_map"],
+        help="Type of plot: 'emotion_dist', 'error_bars', 'error_boxes' or 'error_heat_map'")
     parser.add_argument(
         "--evaluation_csv",
         type=str,
@@ -672,7 +868,23 @@ if __name__ == "__main__":
         "--compare_strengths",
         action="store_true",
         help="In 'error_bars' and 'error_boxes' modes, display individual strength errors on the same plot")
-    
+    parser.add_argument(
+        "--steps",
+        type=int,
+        default=10,
+        help="Number of grid steps for error_heat_map (default: 10).")
+    parser.add_argument(
+        "--interpolation",
+        type=str,
+        default="quadric",
+        help="Interpolation method for heatmap plotting (e.g. 'quadric', 'nearest')")
+    parser.add_argument(
+        "--heatmap_component",
+        type=str,
+        choices=["both", "valence", "arousal"],
+        default="both",
+        help="For error_heat_map, choose which error component to plot (default: both)")
+
     args = parser.parse_args()
 
     # Ensure input CSV exists.
@@ -708,6 +920,14 @@ if __name__ == "__main__":
             separate_strengths=args.separate_strengths,
             compare_angles=args.compare_angles,
             compare_strengths=args.compare_strengths
+        )
+    elif args.plot_type == "error_heat_map":
+        plot_error_heat_map(
+            evaluation_csv=args.evaluation_csv,
+            output_dir=args.output_dir,
+            steps=args.steps,
+            interpolation=args.interpolation,
+            component=args.heatmap_component
         )
     else:
         raise ValueError(f"Unknown plot type: {args.plot_type}. Supported types are 'emotion_dist',"
